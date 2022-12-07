@@ -11,9 +11,7 @@
 #include <string>
 #include <vector>
 
-#include <windows.h>
-
-constexpr static char vs[] = R"(#version 300 es
+constexpr static char vs[] = R"(#version 310 es
 precision highp float;
 uniform vec2 window;
 uniform float T;
@@ -22,8 +20,7 @@ layout(location=1) in vec2 speed;
 layout(location=2) in vec4 incolor;
 out vec2 coord;
 out vec4 color;
-void main()
-{
+void main() {
     vec2 offset = vec2((gl_VertexID & 1) == 0 ? -1.0 : 1.0, (gl_VertexID & 2) == 0 ? -1.0 : 1.0);
     coord = offset;
     color = incolor;
@@ -35,48 +32,20 @@ void main()
     gl_Position.zw = vec2(0, 1);
 })";
 
-constexpr static char fs[] = R"(#version 300 es
-#extension GL_ANGLE_shader_pixel_local_storage : require
-
+constexpr static char fs[] = R"(#version 310 es
 precision mediump float;
 
 in vec2 coord;
 in vec4 color;
 
-layout(binding=0, rgba8) uniform mediump pixelLocalANGLE framebuffer;
+layout(binding=0, r32ui) uniform highp coherent writeonly uimage2D framebuffer;
 
-float color_burn_component(vec2 s, vec2 d)
-{
-    if (d.y == d.x)
-    {
-        return s.y*d.y + s.x*(1.0 - d.y) + d.x*(1.0 - s.y);
-    }
-    else if (s.x == 0.0)
-    {
-        return d.x*(1.0 - s.y);
-    }
-    else
-    {
-        float delta = max(0.0, d.y - (d.y - d.x)*s.y / s.x);
-        return delta*s.y + s.x*(1.0 - d.y) + d.x*(1.0 - s.y);
-    }
-}
-
-vec4 blend(vec4 src, vec4 dst)
-{
-    return (dst.a == 0.0) ? src : vec4(color_burn_component(src.ra, dst.ra),
-                                       color_burn_component(src.ga, dst.ga),
-                                       color_burn_component(src.ba, dst.ba),
-                                       src.a + (1.0 - src.a)*dst.a);
-}
-
-void main()
-{
+void main() {
+    ivec2 pixelCoord = ivec2(floor(gl_FragCoord.xy));
     float f = coord.x * coord.x + coord.y * coord.y - 1.0;
     float coverage = clamp(.5 - f/fwidth(f), 0.0, 1.0);
     vec4 s = vec4(color.rgb, 1) * (color.a * mix(.25, 1.0, dot(coord, coord)) * coverage);
-    vec4 d = pixelLocalLoadANGLE(framebuffer);
-    pixelLocalStoreANGLE(framebuffer, blend(s, d));
+    imageStore(framebuffer, pixelCoord, uvec4(packUnorm4x8(s)));
 })";
 
 static bool compile_and_attach_shader(GLuint program, GLuint type, const char* source)
@@ -128,24 +97,6 @@ static bool link_program(GLuint program)
     return true;
 }
 
-static void GLAPIENTRY err_msg_callback(GLenum source,
-                                        GLenum type,
-                                        GLuint id,
-                                        GLenum severity,
-                                        GLsizei length,
-                                        const GLchar* message,
-                                        const void* userParam)
-{
-    if (type == GL_DEBUG_TYPE_ERROR)
-    {
-        printf("GL ERROR: %s\n", message);
-    }
-    else if (type == GL_DEBUG_TYPE_PERFORMANCE)
-    {
-        printf("GL PERF: %s\n", message);
-    }
-}
-
 static int W = 2048;
 static int H = 2048;
 
@@ -169,11 +120,8 @@ double now()
 
 int main(int argc, const char* argv[])
 {
-    SetEnvironmentVariable(TEXT("ANGLE_FEATURE_OVERRIDES_ENABLED"),
-                           TEXT("emulatePixelLocalStorage"));
-
     // Select the ANGLE backend.
-    glfwInitHint(GLFW_ANGLE_PLATFORM_TYPE, GLFW_ANGLE_PLATFORM_TYPE_D3D11);
+    glfwInitHint(GLFW_ANGLE_PLATFORM_TYPE, GLFW_ANGLE_PLATFORM_TYPE_VULKAN);
     for (int i = 1; i < argc; i++)
     {
         if (!strcmp(argv[i], "--gl"))
@@ -207,7 +155,7 @@ int main(int argc, const char* argv[])
     glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API);
     glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_SAMPLES, 0);
     GLFWwindow* window = glfwCreateWindow(W, H, "Rive Bubbles", nullptr, nullptr);
@@ -234,19 +182,6 @@ int main(int argc, const char* argv[])
     printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
     fflush(stdout);
 
-    if (!GLAD_GL_ANGLE_shader_pixel_local_storage_coherent)
-    {
-        printf("ANGLE_shader_pixel_local_storage_coherent not supported\n");
-        return -1;
-    }
-
-    if (GLAD_GL_KHR_debug)
-    {
-        glEnable(GL_DEBUG_OUTPUT);
-        glDebugMessageControlKHR(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
-        glDebugMessageCallbackKHR(&err_msg_callback, nullptr);
-    }
-
     GLuint program = glCreateProgram();
     if (!compile_and_attach_shader(program, GL_VERTEX_SHADER, vs) ||
         !compile_and_attach_shader(program, GL_FRAGMENT_SHADER, fs) || !link_program(program))
@@ -266,10 +201,10 @@ int main(int argc, const char* argv[])
         bubble.x = (frand(-1 + r, 1 - r) + 1) * 1024.f;
         bubble.y = (frand(-1 + r, 1 - r) + 1) * 1024.f;
         bubble.r = r * 1024.f;
-        bubble.dx = (frand() - .5) * .02 * 1024.f;
-        bubble.dy = (frand() - .5) * .02 * 1024.f;
+        bubble.dx = (frand() - .5f) * .02f * 1024.f;
+        bubble.dy = (frand() - .5f) * .02f * 1024.f;
         // bubble.da = 0; //(frand() - .5) * .03;
-        bubble.color = {frand(.5, 1), frand(.5, 1), frand(.5, 1), frand(.75, 1)};
+        bubble.color = {frand(.5f, 1), frand(.5f, 1), frand(.5f, 1), frand(.75f, 1)};
     }
 
     GLuint bubbleBuff;
@@ -307,14 +242,8 @@ int main(int argc, const char* argv[])
     GLuint renderFBO;
     glGenFramebuffers(1, &renderFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, renderFBO);
-    glDrawBuffers(0, nullptr);
+    glClearColor(.1f, .1f, .1f, .1f);
     glDisable(GL_DITHER);
-
-    float clearColor[] = {.1f, .1f, .1f, .1f};
-    glFramebufferPixelLocalClearValuefvANGLE(0, clearColor);
-
-    GLenum clearOp = GL_CLEAR_ANGLE;
-    GLenum keepOp = GL_KEEP;
 
     int totalFrames = 0;
     int frames = 0;
@@ -329,7 +258,7 @@ int main(int argc, const char* argv[])
         {
             printf("rendering %i bubbles at %i x %i\n", n, width, height);
             glViewport(0, 0, width, height);
-            glUniform2f(uniformWindow, width, height);
+            glUniform2f(uniformWindow, static_cast<float>(width), static_cast<float>(height));
 
             glDeleteTextures(1, &tex);
             glGenTextures(1, &tex);
@@ -340,18 +269,18 @@ int main(int argc, const char* argv[])
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
 
             glBindFramebuffer(GL_FRAMEBUFFER, renderFBO);
-            glFramebufferTexturePixelLocalStorageANGLE(0, tex, 0, 0);
             glDrawBuffers(0, nullptr);
+            glFramebufferParameteri(GL_DRAW_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_WIDTH, width);
+            glFramebufferParameteri(GL_DRAW_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_HEIGHT, height);
+            glBindImageTexture(0, tex, 0, 0, 0, GL_WRITE_ONLY, GL_R32UI);
 
             lastWidth = width;
             lastHeight = height;
         }
 
         glBindFramebuffer(GL_FRAMEBUFFER, renderFBO);
-        glBeginPixelLocalStorageANGLE(1, &clearOp);
-        glUniform1f(uniformT, totalFrames++);
+        glUniform1f(uniformT, static_cast<float>(totalFrames++));
         glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, n);
-        glEndPixelLocalStorageANGLE(1, &keepOp);
 
         glBindFramebuffer(GL_READ_FRAMEBUFFER, blitFBO);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
